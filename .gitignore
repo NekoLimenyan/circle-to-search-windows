@@ -1,7 +1,20 @@
+# Python cache та скомпільовані файли
 __pycache__/
 *.py[cod]
 *$py.class
-*.pid
+
+# Віртуальні середовища
+.venv/
+venv/
+env/
+
+# Локальні налаштування IDE та ОС
 .vscode/
 .idea/
-*.tmp
+Thumbs.db
+desktop.ini
+
+# Згенеровані артефакти встановлення
+*.lnk
+*.pid
+app/circle_to_search.ico
