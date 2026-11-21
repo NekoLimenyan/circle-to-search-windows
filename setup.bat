@@ -1,36 +1,36 @@
 @echo off
 chcp 65001 >nul
-echo ===================================================
-echo   Установка и настройка Circle to Search Windows
-echo ===================================================
+title Встановлення Circle to Search для Windows
 
-:: 1. Проверка наличия Python
-python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [ОШИБКА] Python не найден в системе. Установите Python 3.10+ и добавьте его в PATH.
-    pause
-    exit /b
+set "SCRIPT_DIR=%~dp0"
+cd /d "%SCRIPT_DIR%"
+
+if exist ".venv\Scripts\python.exe" (
+    set "PY_EXE=.venv\Scripts\python.exe"
+    set "PYW_EXE=.venv\Scripts\pythonw.exe"
+) else (
+    python --version >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo [ПОМИЛКА] Python не знайдено у PATH.
+        pause
+        exit /b 1
+    )
+    set "PY_EXE=python"
+    set "PYW_EXE=pythonw"
 )
 
-:: 2. Установка зависимостей
-echo [1/2] Установка необходимых библиотек...
-python -m pip install -r "%~dp0requirements.txt"
-
-:: 3. Создание ярлыка на Рабочем столе через PowerShell
-echo [2/2] Создание ярлыка на Рабочем столе...
-set SCRIPT_DIR=%~dp0
-set TARGET_FILE=%SCRIPT_DIR%circle_to_search.pyw
-
-powershell -NoProfile -Command ^
-    "$ws = New-Object -ComObject WScript.Shell; " ^
-    "$desktop = [Environment]::GetFolderPath('Desktop'); " ^
-    "$shortcut = $ws.CreateShortcut(\"$desktop\Circle to Search.lnk\"); " ^
-    "$shortcut.TargetPath = 'pythonw.exe'; " ^
-    "$shortcut.Arguments = '\"%TARGET_FILE%\"'; " ^
-    "$shortcut.WorkingDirectory = '%SCRIPT_DIR%'; " ^
-    "$shortcut.Description = 'Circle to Search for Windows'; " ^
-    "$shortcut.Save()"
+echo [1/3] Встановлення залежностей...
+"%PY_EXE%" -m pip install -r requirements.txt
 
 echo.
-echo Все готово! Ярлык 'Circle to Search' создан на Рабочем столе.
-pause
+set /p ADD_STARTUP="[2/3] Додати ярлик в автозавантаження Windows? (Y/N): "
+if /i "%ADD_STARTUP%"=="Y" (
+    "%PY_EXE%" -m app.shortcut --startup
+) else (
+    "%PY_EXE%" -m app.shortcut
+)
+
+echo.
+echo [3/3] Запуск Circle to Search...
+start "" "%PYW_EXE%" "%SCRIPT_DIR%circle_to_search.pyw"
+timeout /t 2 >nul
