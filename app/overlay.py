@@ -1,6 +1,7 @@
 import time
 import math
 import tkinter as tk
+import keyboard
 from PIL import ImageGrab, ImageEnhance, ImageTk
 
 from app.config import (
@@ -34,6 +35,7 @@ class OverlayUI:
         self.closed = False
         self.dragging = False
         self.after_ids = []
+        self._esc_hook = None
 
         self.vx, self.vy, self.sw, self.sh = get_virtual_screen_rect()
 
@@ -114,7 +116,10 @@ class OverlayUI:
             self.canvas.bind(seq, self.on_release)
 
         self.canvas.bind("<ButtonPress-3>", self.close)
-        self.win.bind("<Escape>", self.close)
+        for seq in ("<Escape>", "<Any-Escape>"):
+            self.win.bind(seq, self.close)
+            self.canvas.bind(seq, self.close)
+
         self.win.bind("<Control-c>", self.quick_copy_current)
         self.win.bind("<Control-C>", self.quick_copy_current)
 
@@ -122,8 +127,26 @@ class OverlayUI:
         for idx, mode_key in enumerate(VALID_MODES, start=1):
             self.win.bind(str(idx), lambda _e, m=mode_key: self.set_mode(m))
 
+        # Тимчасовий перехоплювач Esc: блокує Alt+Esc у Windows і закриває оверлей без затримки
+        try:
+            self._esc_hook = keyboard.on_press_key("esc", self._on_global_esc, suppress=True)
+        except Exception:
+            self._esc_hook = None
+
         self.win.lift()
         self.win.focus_force()
+
+    def _on_global_esc(self, _event):
+        if not self.closed:
+            self.master.after(0, self.close)
+
+    def _release_esc_hook(self):
+        if self._esc_hook is not None:
+            try:
+                keyboard.unhook(self._esc_hook)
+            except Exception:
+                pass
+            self._esc_hook = None
 
     def schedule(self, delay_ms: int, func):
         if not self.closed:
@@ -217,6 +240,8 @@ class OverlayUI:
         return shapes
 
     def render_toolbar(self):
+        if self.closed:
+            return
         self.canvas.delete("ui")
         self.icon_shapes.clear()
 
@@ -448,6 +473,8 @@ class OverlayUI:
         self.closed = True
         self.dragging = False
 
+        self._release_esc_hook()
+
         for aid in self.after_ids:
             try:
                 self.win.after_cancel(aid)
@@ -457,8 +484,8 @@ class OverlayUI:
 
         try:
             self.win.withdraw()
-            self.master.update()
             self.win.destroy()
+            self.master.update_idletasks()
         except Exception:
             pass
 

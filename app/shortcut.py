@@ -1,7 +1,20 @@
 import os
 import sys
+import ctypes
 import subprocess
 from app.icon_gen import generate_lens_icon
+
+# Системні константи Windows Shell (враховують перенесення папок у OneDrive)
+CSIDL_PROGRAMS = 0x0002
+CSIDL_STARTUP = 0x0007
+CSIDL_DESKTOPDIRECTORY = 0x0010
+
+
+def _get_shell_folder(csidl: int) -> str:
+    buf = ctypes.create_unicode_buffer(260)
+    if ctypes.windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buf) == 0:
+        return buf.value
+    return ""
 
 
 def find_pythonw() -> str:
@@ -44,8 +57,8 @@ def install_shortcuts(add_startup: bool = False):
     pythonw = find_pythonw()
 
     # 1. Робочий стіл
-    desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-    if os.path.isdir(desktop):
+    desktop = _get_shell_folder(CSIDL_DESKTOPDIRECTORY)
+    if desktop and os.path.isdir(desktop):
         _create_windows_lnk(
             os.path.join(desktop, "Circle to Search.lnk"),
             pythonw,
@@ -54,15 +67,9 @@ def install_shortcuts(add_startup: bool = False):
             icon_path,
         )
 
-    # 2. Меню «Пуск» (зручно шукати через Win або закріпити на панелі завдань)
-    start_menu = os.path.join(
-        os.getenv("APPDATA", ""),
-        "Microsoft",
-        "Windows",
-        "Start Menu",
-        "Programs",
-    )
-    if os.path.isdir(start_menu):
+    # 2. Меню «Пуск»
+    start_menu = _get_shell_folder(CSIDL_PROGRAMS)
+    if start_menu and os.path.isdir(start_menu):
         _create_windows_lnk(
             os.path.join(start_menu, "Circle to Search.lnk"),
             pythonw,
@@ -73,15 +80,8 @@ def install_shortcuts(add_startup: bool = False):
 
     # 3. Автозавантаження Windows (за запитом)
     if add_startup:
-        startup_dir = os.path.join(
-            os.getenv("APPDATA", ""),
-            "Microsoft",
-            "Windows",
-            "Start Menu",
-            "Programs",
-            "Startup",
-        )
-        if os.path.isdir(startup_dir):
+        startup_dir = _get_shell_folder(CSIDL_STARTUP)
+        if startup_dir and os.path.isdir(startup_dir):
             _create_windows_lnk(
                 os.path.join(startup_dir, "Circle to Search.lnk"),
                 pythonw,
