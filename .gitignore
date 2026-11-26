@@ -18,3 +18,8 @@ desktop.ini
 *.lnk
 *.pid
 app/circle_to_search.ico
+
+# Збірка релізу (PyInstaller)
+build/
+dist/
+*.spec

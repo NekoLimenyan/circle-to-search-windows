@@ -9,6 +9,18 @@ LENS_URL = "https://lens.google.com/search?p"
 PASTE_DELAY_MS = 1700
 OCR_LANGS = ("uk-UA", "en-US", None)
 
+BROWSER_PROCESSES = (
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "brave.exe",
+    "opera.exe",
+    "vivaldi.exe",
+    "zen.exe",
+    "arc.exe",
+    "browser.exe",
+)
+
 VALID_MODES = ("rect", "lasso", "copy", "ocr")
 DEFAULT_MODE = "rect"
 

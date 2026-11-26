@@ -1,7 +1,7 @@
 import os
+import sys
 import io
 import time
-import tempfile
 import ctypes
 from ctypes import wintypes
 from PIL import Image
@@ -33,6 +33,17 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 STILL_ACTIVE = 259
 PID_FILE = os.path.join(STATE_DIR, "service.pid")
 
+# Віртуальні клавіші Windows для апаратної емуляції Ctrl+V
+VK_SHIFT = 0x10
+VK_CONTROL = 0x11
+VK_MENU = 0x12
+VK_LMENU = 0xA4
+VK_RMENU = 0xA5
+VK_LWIN = 0x5B
+VK_RWIN = 0x5C
+VK_V = 0x56
+KEYEVENTF_KEYUP = 0x0002
+
 
 def setup_dpi_awareness():
     """Фіксує Per-Monitor DPI для чіткого рендерингу 1:1 при масштабуванні Windows."""
@@ -46,7 +57,7 @@ def setup_dpi_awareness():
 
 
 def _terminate_if_python(pid: int) -> bool:
-    """Перевіряє, чи живий процес Python із вказаним PID, і завершує його."""
+    """Перевіряє, чи живий процес служби із вказаним PID, і завершує його."""
     if pid <= 0 or pid == os.getpid():
         return False
 
@@ -62,7 +73,9 @@ def _terminate_if_python(pid: int) -> bool:
         buf = ctypes.create_unicode_buffer(512)
         size = wintypes.DWORD(512)
         if kernel32.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
-            if "python" not in buf.value.lower():
+            proc_name = os.path.basename(buf.value).lower()
+            current_name = os.path.basename(sys.executable).lower()
+            if "python" not in proc_name and proc_name != current_name:
                 return False
 
         return bool(kernel32.TerminateProcess(h_proc, 0))
@@ -71,11 +84,7 @@ def _terminate_if_python(pid: int) -> bool:
 
 
 def toggle_background_service() -> str:
-    """
-    Перемикає фонову службу:
-    - якщо вже запущена -> вимикає її та повертає 'stopped';
-    - якщо вимкнена -> реєструє поточний PID та повертає 'started'.
-    """
+    """Перемикає фонову службу (ON / OFF)."""
     os.makedirs(STATE_DIR, exist_ok=True)
 
     if os.path.exists(PID_FILE):
@@ -108,6 +117,53 @@ def get_primary_screen_size():
     return user32.GetSystemMetrics(SM_CXSCREEN), user32.GetSystemMetrics(SM_CYSCREEN)
 
 
+def get_foreground_window_info():
+    """Повертає (hwnd, process_name_lower, window_title) активного вікна Windows."""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return 0, "", ""
+
+    title_len = user32.GetWindowTextLengthW(hwnd)
+    title_buf = ctypes.create_unicode_buffer(title_len + 1)
+    user32.GetWindowTextW(hwnd, title_buf, title_len + 1)
+
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    proc_name = ""
+    if pid.value:
+        h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+        if h_proc:
+            try:
+                buf = ctypes.create_unicode_buffer(512)
+                size = wintypes.DWORD(512)
+                if kernel32.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
+                    proc_name = os.path.basename(buf.value).lower()
+            finally:
+                kernel32.CloseHandle(h_proc)
+
+    return hwnd, proc_name, title_buf.value
+
+
+def send_ctrl_v():
+    """Надсилає Ctrl+V на рівні Windows VK-кодів незалежно від розкладки (UA/RU/EN)."""
+    # Скидаємо можливе утримання Alt/Shift/Win після хоткея Alt+Q
+    for mod_vk in (VK_MENU, VK_LMENU, VK_RMENU, VK_SHIFT, VK_LWIN, VK_RWIN):
+        if user32.GetAsyncKeyState(mod_vk) & 0x8000:
+            scan = user32.MapVirtualKeyW(mod_vk, 0)
+            user32.keybd_event(mod_vk, scan, KEYEVENTF_KEYUP, 0)
+
+    ctrl_scan = user32.MapVirtualKeyW(VK_CONTROL, 0)
+    v_scan = user32.MapVirtualKeyW(VK_V, 0)
+
+    user32.keybd_event(VK_CONTROL, ctrl_scan, 0, 0)
+    time.sleep(0.02)
+    user32.keybd_event(VK_V, v_scan, 0, 0)
+    time.sleep(0.04)
+    user32.keybd_event(VK_V, v_scan, KEYEVENTF_KEYUP, 0)
+    time.sleep(0.02)
+    user32.keybd_event(VK_CONTROL, ctrl_scan, KEYEVENTF_KEYUP, 0)
+
+
 def copy_image_to_clipboard(image: Image.Image):
     output = io.BytesIO()
     image.convert("RGB").save(output, "BMP")
@@ -119,13 +175,13 @@ def copy_image_to_clipboard(image: Image.Image):
     ctypes.memmove(mem_ptr, data, len(data))
     kernel32.GlobalUnlock(h_mem)
 
-    for _ in range(5):
+    for _ in range(8):
         if user32.OpenClipboard(0):
             user32.EmptyClipboard()
             user32.SetClipboardData(CF_DIB, h_mem)
             user32.CloseClipboard()
             return
-        time.sleep(0.01)
+        time.sleep(0.015)
 
 
 def copy_text_to_clipboard(text: str):
@@ -135,10 +191,10 @@ def copy_text_to_clipboard(text: str):
     ctypes.memmove(mem_ptr, text_bytes, len(text_bytes))
     kernel32.GlobalUnlock(h_mem)
 
-    for _ in range(5):
+    for _ in range(8):
         if user32.OpenClipboard(0):
             user32.EmptyClipboard()
             user32.SetClipboardData(CF_UNICODETEXT, h_mem)
             user32.CloseClipboard()
             return
-        time.sleep(0.01)
+        time.sleep(0.015)

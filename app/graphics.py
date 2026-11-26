@@ -1,5 +1,5 @@
 import math
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageTk
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps, ImageStat, ImageTk
 from app.config import GOOGLE_STOPS, DIM_BRIGHTNESS, LASSO_PADDING
 
 
@@ -137,11 +137,9 @@ def crop_lasso_with_context(screenshot: Image.Image, lasso_points, sw: int, sh: 
     sharp_crop = screenshot.crop((x1, y1, x2, y2))
     w, h = sharp_crop.size
 
-    # Розмитий та затемнений фон замість білих плям по кутах
     context_bg = sharp_crop.filter(ImageFilter.GaussianBlur(radius=7))
     context_bg = ImageEnhance.Brightness(context_bg).enhance(DIM_BRIGHTNESS)
 
-    # 4x supersampling маски для плавних країв без «сходинок»
     scale = 4
     hi_mask = Image.new("L", (w * scale, h * scale), 0)
     draw = ImageDraw.Draw(hi_mask)
@@ -153,3 +151,41 @@ def crop_lasso_with_context(screenshot: Image.Image, lasso_points, sw: int, sh: 
 
     final_img = Image.composite(sharp_crop, context_bg, smooth_mask)
     return final_img, (x1, y1, x2, y2)
+
+
+def prepare_image_for_ocr(image: Image.Image, high_contrast: bool = False) -> Image.Image:
+    """Готує вирізане зображення до OCR: апскейл дрібного шрифту, поля та інверсія темного фону."""
+    img = image.convert("RGB")
+    w, h = img.size
+
+    # Windows OCR потребує висоту літер від ~22 px; дрібні фрагменти масштабуємо
+    if h < 55 or w < 140:
+        scale = 3
+    elif h < 150 or w < 360:
+        scale = 2
+    else:
+        scale = 1
+
+    if scale > 1:
+        img = img.resize((w * scale, h * scale), Image.Resampling.LANCZOS)
+
+    if high_contrast:
+        gray = img.convert("L")
+        mean_luma = ImageStat.Stat(gray).mean[0]
+        # Темний інтерфейс (наприклад, VS Code) перетворюємо на чорний текст по світлому фону
+        if mean_luma < 115:
+            gray = ImageOps.invert(gray)
+        gray = ImageOps.autocontrast(gray, cutoff=1)
+        gray = gray.filter(ImageFilter.SHARPEN)
+        img = gray.convert("RGB")
+
+    # Визначаємо фоновий колір по кутах і додаємо відступ 24 px навколо тексту
+    pw, ph = img.size
+    corners = [
+        img.getpixel((0, 0)),
+        img.getpixel((pw - 1, 0)),
+        img.getpixel((0, ph - 1)),
+        img.getpixel((pw - 1, ph - 1)),
+    ]
+    bg_color = tuple(sum(c[i] for c in corners) // 4 for i in range(3))
+    return ImageOps.expand(img, border=24, fill=bg_color)
