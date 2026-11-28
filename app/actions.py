@@ -16,7 +16,7 @@ from app.win_api import (
 )
 from app.graphics import prepare_image_for_ocr
 
-ALLOWED_PUNCT = set(" .,!?:;-—–()[]{}'\"/\\@#$%&*+=<>_~`№|«»")
+ALLOWED_PUNCT = set(" .,!?:;-—–()[]{}'\"/\\@#$%&*+=<>_~`№|«»^")
 
 
 class OneUIToast:
@@ -97,8 +97,63 @@ def _clean_ocr_text(raw: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _score_ocr_text(text: str) -> float:
-    """Оцінює якість розпізнаного тексту; повертає -1, якщо це випадковий набір символів."""
+def _extract_ordered_text(res) -> str:
+    """Відновлює правильний порядок рядків і слів за координатами (без розбиття на колонки)."""
+    try:
+        words = []
+        for line in res.lines:
+            for w in line.words:
+                rect = w.bounding_rect
+                words.append({
+                    "text": w.text,
+                    "x": float(rect.x),
+                    "y": float(rect.y),
+                    "w": float(rect.width),
+                    "h": float(rect.height),
+                    "cy": float(rect.y) + float(rect.height) * 0.5,
+                })
+        if not words:
+            return _clean_ocr_text(getattr(res, "text", ""))
+
+        words.sort(key=lambda item: (item["cy"], item["x"]))
+        heights = sorted(item["h"] for item in words if item["h"] > 0)
+        median_h = heights[len(heights) // 2] if heights else 16.0
+        row_tol = max(6.0, median_h * 0.55)
+
+        rows = []
+        for w in words:
+            placed = False
+            for row in rows:
+                if abs(w["cy"] - row["cy"]) <= row_tol:
+                    row["words"].append(w)
+                    row["cy"] = sum(item["cy"] for item in row["words"]) / len(row["words"])
+                    placed = True
+                    break
+            if not placed:
+                rows.append({"cy": w["cy"], "words": [w]})
+
+        rows.sort(key=lambda r: r["cy"])
+        output_lines = []
+        for row in rows:
+            row_words = sorted(row["words"], key=lambda item: item["x"])
+            line_parts = []
+            prev = None
+            for item in row_words:
+                if prev is not None:
+                    gap = item["x"] - (prev["x"] + prev["w"])
+                    if gap > max(1.5, item["h"] * 0.14):
+                        line_parts.append(" ")
+                line_parts.append(item["text"])
+                prev = item
+            output_lines.append("".join(line_parts).strip())
+
+        return "\n".join(line for line in output_lines if line)
+    except Exception:
+        return _clean_ocr_text(getattr(res, "text", ""))
+
+
+def _score_ocr_text(text: str, lang: str | None = None) -> float:
+    """Оцінює якість тексту з пріоритетом рушіїв, що підтримують кирилицю й латиницю."""
     if not text:
         return -1.0
 
@@ -117,7 +172,13 @@ def _score_ocr_text(text: str) -> float:
         return -1.0
 
     alnum_ratio = alnum_count / len(non_space)
-    return alnum_count * alnum_ratio - weird_count * 3.0
+    score = alnum_count * alnum_ratio - weird_count * 3.0
+
+    # uk-UA / ru-RU розпізнають і кирилицю, і латиницю; en-US псує кирилицю в трансліт
+    if lang and lang.lower().startswith(("uk", "ru")):
+        score += 15.0
+
+    return score
 
 
 def _detect_system_ocr_langs():
@@ -136,14 +197,13 @@ def _detect_system_ocr_langs():
         for tag in installed:
             if tag not in ordered:
                 ordered.append(tag)
-        ordered.append(None)
         return ordered
     except Exception:
-        return list(OCR_LANGS)
+        return [l for l in OCR_LANGS if l]
 
 
 def recognize_and_copy_text(root: tk.Tk, image: Image.Image):
-    """Розпізнає текст із попередньою обробкою зображення та автовизначенням мов Windows."""
+    """Розпізнає текст із відновленням порядку слів та автовизначенням мов Windows."""
     def _ocr_worker():
         try:
             ctypes.windll.ole32.CoInitializeEx(0, 0)
@@ -165,8 +225,8 @@ def recognize_and_copy_text(root: tk.Tk, image: Image.Image):
             return
 
         candidates = [
-            prepare_image_for_ocr(image, high_contrast=False),
             prepare_image_for_ocr(image, high_contrast=True),
+            prepare_image_for_ocr(image, high_contrast=False),
         ]
 
         best_text = ""
@@ -174,23 +234,19 @@ def recognize_and_copy_text(root: tk.Tk, image: Image.Image):
         succeeded_any = False
         last_error = ""
 
-        for idx, prep_img in enumerate(candidates):
+        for prep_img in candidates:
             for lang in langs_to_try:
                 try:
-                    coro = winocr.recognize_pil(prep_img, lang=lang) if lang else winocr.recognize_pil(prep_img)
-                    res = asyncio.run(coro)
+                    res = asyncio.run(winocr.recognize_pil(prep_img, lang=lang))
                     succeeded_any = True
-                    cleaned = _clean_ocr_text(res.text)
-                    score = _score_ocr_text(cleaned)
+                    ordered_text = _extract_ordered_text(res)
+                    score = _score_ocr_text(ordered_text, lang=lang)
                     if score > best_score:
                         best_score = score
-                        best_text = cleaned
+                        best_text = ordered_text
                 except Exception as e:
                     last_error = str(e) or type(e).__name__
                     continue
-
-            if idx == 0 and best_score >= 6.0:
-                break
 
         if best_text and best_score > 0:
             copy_text_to_clipboard(best_text)

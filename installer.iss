@@ -41,3 +41,12 @@ Filename: "{app}\CircleToSearch.exe"; Description: "Запустити Circle to
 
 [UninstallRun]
 Filename: "taskkill.exe"; Parameters: "/F /IM CircleToSearch.exe"; Flags: runhidden; RunOnceId: "StopCircleToSearch"
+
+[Code]
+function InitializeSetup(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec('taskkill.exe', '/F /T /IM CircleToSearch.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := True;
+end;

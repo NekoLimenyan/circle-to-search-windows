@@ -1,7 +1,6 @@
 import math
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps, ImageStat, ImageTk
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageOps, ImageStat, ImageTk
 from app.config import GOOGLE_STOPS, DIM_BRIGHTNESS, LASSO_PADDING
-
 
 def sample_google_rgb(t: float):
     """Повертає (R, G, B) у точці t ∈ [0, 1) плавного градієнта Google."""
@@ -154,14 +153,13 @@ def crop_lasso_with_context(screenshot: Image.Image, lasso_points, sw: int, sh: 
 
 
 def prepare_image_for_ocr(image: Image.Image, high_contrast: bool = False) -> Image.Image:
-    """Готує вирізане зображення до OCR: апскейл дрібного шрифту, поля та інверсія темного фону."""
+    """Готує зображення до OCR: витягує кольоровий текст на темному фоні без спотворення штрихів."""
     img = image.convert("RGB")
     w, h = img.size
 
-    # Windows OCR потребує висоту літер від ~22 px; дрібні фрагменти масштабуємо
-    if h < 55 or w < 140:
+    if h < 48 or w < 140:
         scale = 3
-    elif h < 150 or w < 360:
+    elif h < 220 or w < 450:
         scale = 2
     else:
         scale = 1
@@ -170,16 +168,20 @@ def prepare_image_for_ocr(image: Image.Image, high_contrast: bool = False) -> Im
         img = img.resize((w * scale, h * scale), Image.Resampling.LANCZOS)
 
     if high_contrast:
-        gray = img.convert("L")
-        mean_luma = ImageStat.Stat(gray).mean[0]
-        # Темний інтерфейс (наприклад, VS Code) перетворюємо на чорний текст по світлому фону
-        if mean_luma < 115:
-            gray = ImageOps.invert(gray)
-        gray = ImageOps.autocontrast(gray, cutoff=1)
-        gray = gray.filter(ImageFilter.SHARPEN)
+        gray_probe = img.convert("L")
+        mean_luma = ImageStat.Stat(gray_probe).mean[0]
+
+        if mean_luma < 120:
+            # Для темних тем беремо максимум із R/G/B, щоб синій та фіолетовий текст не тьмянів
+            r, g, b = img.split()
+            bright = ImageChops.lighter(ImageChops.lighter(r, g), b)
+            gray = ImageOps.invert(bright)
+        else:
+            gray = gray_probe
+
+        gray = ImageOps.autocontrast(gray, cutoff=2)
         img = gray.convert("RGB")
 
-    # Визначаємо фоновий колір по кутах і додаємо відступ 24 px навколо тексту
     pw, ph = img.size
     corners = [
         img.getpixel((0, 0)),
@@ -188,4 +190,4 @@ def prepare_image_for_ocr(image: Image.Image, high_contrast: bool = False) -> Im
         img.getpixel((pw - 1, ph - 1)),
     ]
     bg_color = tuple(sum(c[i] for c in corners) // 4 for i in range(3))
-    return ImageOps.expand(img, border=24, fill=bg_color)
+    return ImageOps.expand(img, border=32, fill=bg_color)
