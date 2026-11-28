@@ -2,10 +2,11 @@ import os
 import sys
 import io
 import time
+import threading
 import ctypes
 from ctypes import wintypes
 from PIL import Image
-from app.config import STATE_DIR
+from app.config import STATE_DIR, HOTKEY
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -33,16 +34,23 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 STILL_ACTIVE = 259
 PID_FILE = os.path.join(STATE_DIR, "service.pid")
 
-# Віртуальні клавіші Windows для апаратної емуляції Ctrl+V
+# Віртуальні клавіші та константи Windows
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
 VK_MENU = 0x12
-VK_LMENU = 0xA4
-VK_RMENU = 0xA5
+VK_ESCAPE = 0x1B
+VK_Q = 0x51
+VK_V = 0x56
 VK_LWIN = 0x5B
 VK_RWIN = 0x5C
-VK_V = 0x56
+VK_LMENU = 0xA4
+VK_RMENU = 0xA5
 KEYEVENTF_KEYUP = 0x0002
+
+MOD_ALT = 0x0001
+MOD_NOREPEAT = 0x4000
+WM_HOTKEY = 0x0312
+HOTKEY_ID = 1
 
 
 def setup_dpi_awareness():
@@ -105,6 +113,38 @@ def toggle_background_service() -> str:
     return "started"
 
 
+def start_global_hotkey_listener(on_trigger):
+    """Реєструє Alt+Q через нативний Windows RegisterHotKey (без хуків, які може вимкнути система)."""
+    def _worker():
+        registered = bool(user32.RegisterHotKey(None, HOTKEY_ID, MOD_ALT | MOD_NOREPEAT, VK_Q))
+        if not registered:
+            registered = bool(user32.RegisterHotKey(None, HOTKEY_ID, MOD_ALT, VK_Q))
+
+        if registered:
+            msg = wintypes.MSG()
+            try:
+                while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                    if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_ID:
+                        on_trigger()
+            finally:
+                user32.UnregisterHotKey(None, HOTKEY_ID)
+        else:
+            # Резервний варіант, якщо інший застосунок уже перехопив Alt+Q
+            try:
+                import keyboard
+                keyboard.add_hotkey(HOTKEY, on_trigger)
+                keyboard.wait()
+            except Exception:
+                pass
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def is_escape_pressed() -> bool:
+    """Миттєво перевіряє фізичний стан клавіші Esc без системного хука."""
+    return bool(user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000)
+
+
 def get_virtual_screen_rect():
     vx = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
     vy = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
@@ -146,7 +186,6 @@ def get_foreground_window_info():
 
 def send_ctrl_v():
     """Надсилає Ctrl+V на рівні Windows VK-кодів незалежно від розкладки (UA/RU/EN)."""
-    # Скидаємо можливе утримання Alt/Shift/Win після хоткея Alt+Q
     for mod_vk in (VK_MENU, VK_LMENU, VK_RMENU, VK_SHIFT, VK_LWIN, VK_RWIN):
         if user32.GetAsyncKeyState(mod_vk) & 0x8000:
             scan = user32.MapVirtualKeyW(mod_vk, 0)

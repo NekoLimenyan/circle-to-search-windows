@@ -1,7 +1,6 @@
 import time
 import math
 import tkinter as tk
-import keyboard
 from PIL import ImageGrab, ImageEnhance, ImageTk
 
 from app.config import (
@@ -11,7 +10,7 @@ from app.config import (
     VALID_MODES,
     DEFAULT_MODE,
 )
-from app.win_api import get_virtual_screen_rect, get_primary_screen_size
+from app.win_api import get_virtual_screen_rect, get_primary_screen_size, is_escape_pressed
 from app.graphics import (
     chaikin_smooth,
     render_rounded_pill,
@@ -35,7 +34,6 @@ class OverlayUI:
         self.closed = False
         self.dragging = False
         self.after_ids = []
-        self._esc_hook = None
 
         self.vx, self.vy, self.sw, self.sh = get_virtual_screen_rect()
 
@@ -107,6 +105,7 @@ class OverlayUI:
         self.render_toolbar()
         self.animate_entrance()
         self.animate_aura()
+        self._poll_escape()
 
         for seq in ("<ButtonPress-1>", "<Any-ButtonPress-1>"):
             self.canvas.bind(seq, self.on_press)
@@ -116,7 +115,7 @@ class OverlayUI:
             self.canvas.bind(seq, self.on_release)
 
         self.canvas.bind("<ButtonPress-3>", self.close)
-        for seq in ("<Escape>", "<Any-Escape>"):
+        for seq in ("<Escape>", "<Alt-Escape>", "<Any-Escape>"):
             self.win.bind(seq, self.close)
             self.canvas.bind(seq, self.close)
 
@@ -127,26 +126,16 @@ class OverlayUI:
         for idx, mode_key in enumerate(VALID_MODES, start=1):
             self.win.bind(str(idx), lambda _e, m=mode_key: self.set_mode(m))
 
-        # Тимчасовий перехоплювач Esc: блокує Alt+Esc у Windows і закриває оверлей без затримки
-        try:
-            self._esc_hook = keyboard.on_press_key("esc", self._on_global_esc, suppress=True)
-        except Exception:
-            self._esc_hook = None
-
         self.win.lift()
         self.win.focus_force()
 
-    def _on_global_esc(self, _event):
-        if not self.closed:
-            self.master.after(0, self.close)
-
-    def _release_esc_hook(self):
-        if self._esc_hook is not None:
-            try:
-                keyboard.unhook(self._esc_hook)
-            except Exception:
-                pass
-            self._esc_hook = None
+    def _poll_escape(self):
+        if self.closed:
+            return
+        if is_escape_pressed():
+            self.close()
+            return
+        self.schedule(20, self._poll_escape)
 
     def schedule(self, delay_ms: int, func):
         if not self.closed:
@@ -472,8 +461,6 @@ class OverlayUI:
             return
         self.closed = True
         self.dragging = False
-
-        self._release_esc_hook()
 
         for aid in self.after_ids:
             try:

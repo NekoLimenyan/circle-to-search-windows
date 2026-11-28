@@ -32,9 +32,15 @@ echo [3/4] Компіляція портативного CircleToSearch.exe...
     --name "CircleToSearch" ^
     --icon "app\circle_to_search.ico" ^
     --hidden-import winocr ^
-    --collect-all winocr ^
-    --collect-all winrt ^
-    --collect-all winsdk ^
+    --hidden-import winrt.runtime ^
+    --hidden-import winrt.system ^
+    --hidden-import winrt.windows.foundation ^
+    --hidden-import winrt.windows.foundation.collections ^
+    --hidden-import winrt.windows.globalization ^
+    --hidden-import winrt.windows.graphics.imaging ^
+    --hidden-import winrt.windows.media.ocr ^
+    --hidden-import winrt.windows.storage.streams ^
+    --collect-submodules winrt ^
     "circle_to_search.pyw"
 
 if %errorlevel% neq 0 (

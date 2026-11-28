@@ -1,4 +1,5 @@
 import time
+import ctypes
 import asyncio
 import threading
 import webbrowser
@@ -20,7 +21,7 @@ ALLOWED_PUNCT = set(" .,!?:;-—–()[]{}'\"/\\@#$%&*+=<>_~`№|«»")
 
 class OneUIToast:
     """Ненав'язливе спливаюче сповіщення в стилі Samsung One UI."""
-    def __init__(self, root: tk.Tk, text: str, duration_ms: int = 1600):
+    def __init__(self, root: tk.Tk, text: str, duration_ms: int = 1800):
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
@@ -61,7 +62,6 @@ def search_google_lens(root: tk.Tk, image: Image.Image):
     webbrowser.open(LENS_URL)
 
     def _paste_worker():
-        # 1. Чекаємо до 5 секунд, поки вікно браузера стане активним
         deadline = time.monotonic() + 5.0
         browser_ready = False
         while time.monotonic() < deadline:
@@ -71,7 +71,6 @@ def search_google_lens(root: tk.Tk, image: Image.Image):
                 break
             time.sleep(0.1)
 
-        # 2. Даємо вкладці час завантажити JS-обробник вставки
         time.sleep(1.05 if browser_ready else 1.8)
         copy_image_to_clipboard(image)
 
@@ -79,7 +78,6 @@ def search_google_lens(root: tk.Tk, image: Image.Image):
         if proc_name in BROWSER_PROCESSES or not browser_ready:
             send_ctrl_v()
 
-            # 3. Якщо браузер довго вантажився і заголовок вкладки ще не змінився — повторюємо 1 раз
             time.sleep(1.25)
             _, proc_after, title_after = get_foreground_window_info()
             if proc_after in BROWSER_PROCESSES and title_after == title_before:
@@ -111,25 +109,59 @@ def _score_ocr_text(text: str) -> float:
     alnum_count = sum(1 for ch in non_space if ch.isalnum())
     weird_count = sum(1 for ch in non_space if not ch.isalnum() and ch not in ALLOWED_PUNCT)
 
-    # Відсіюємо випадки, де майже немає літер/цифр або забагато «битих» символів
-    if alnum_count < 2 and len(non_space) > 2:
-        return -1.0
     if alnum_count == 0:
         return -1.0
-    if weird_count / len(non_space) > 0.25:
+    if alnum_count < 2 and len(non_space) > 2:
+        return -1.0
+    if weird_count / len(non_space) > 0.30:
         return -1.0
 
     alnum_ratio = alnum_count / len(non_space)
     return alnum_count * alnum_ratio - weird_count * 3.0
 
 
+def _detect_system_ocr_langs():
+    """Повертає список доступних мов Windows OCR на поточному ПК."""
+    try:
+        from winrt.windows.media.ocr import OcrEngine
+        installed = [lang.language_tag for lang in OcrEngine.available_recognizer_languages]
+        if not installed:
+            return []
+
+        ordered = []
+        for pref in ("uk-UA", "ru-RU", "en-US"):
+            for tag in installed:
+                if tag.lower() == pref.lower() and tag not in ordered:
+                    ordered.append(tag)
+        for tag in installed:
+            if tag not in ordered:
+                ordered.append(tag)
+        ordered.append(None)
+        return ordered
+    except Exception:
+        return list(OCR_LANGS)
+
+
 def recognize_and_copy_text(root: tk.Tk, image: Image.Image):
-    """Розпізнає текст із попередньою обробкою зображення та фільтрацією шуму."""
+    """Розпізнає текст із попередньою обробкою зображення та автовизначенням мов Windows."""
     def _ocr_worker():
         try:
+            ctypes.windll.ole32.CoInitializeEx(0, 0)
+        except Exception:
+            pass
+
+        try:
             import winocr
-        except ImportError:
-            root.after(0, lambda: OneUIToast(root, "Помилка: модуль winocr не встановлено"))
+        except Exception as e:
+            root.after(0, lambda: OneUIToast(root, f"Помилка модуля OCR: {type(e).__name__}"))
+            return
+
+        langs_to_try = _detect_system_ocr_langs()
+        if langs_to_try == []:
+            root.after(
+                0,
+                lambda: OneUIToast(root, "У Windows не встановлено мовні пакети OCR", duration_ms=2600),
+            )
             return
 
         candidates = [
@@ -139,21 +171,24 @@ def recognize_and_copy_text(root: tk.Tk, image: Image.Image):
 
         best_text = ""
         best_score = -1.0
+        succeeded_any = False
+        last_error = ""
 
         for idx, prep_img in enumerate(candidates):
-            for lang in OCR_LANGS:
+            for lang in langs_to_try:
                 try:
                     coro = winocr.recognize_pil(prep_img, lang=lang) if lang else winocr.recognize_pil(prep_img)
                     res = asyncio.run(coro)
+                    succeeded_any = True
                     cleaned = _clean_ocr_text(res.text)
                     score = _score_ocr_text(cleaned)
                     if score > best_score:
                         best_score = score
                         best_text = cleaned
-                except Exception:
+                except Exception as e:
+                    last_error = str(e) or type(e).__name__
                     continue
 
-            # Якщо вже на першому проході отримано чистий текст — не витрачаємо час на другий
             if idx == 0 and best_score >= 6.0:
                 break
 
@@ -161,6 +196,8 @@ def recognize_and_copy_text(root: tk.Tk, image: Image.Image):
             copy_text_to_clipboard(best_text)
             preview = best_text.replace("\n", " ")[:48]
             root.after(0, lambda: OneUIToast(root, f"Скопійовано: «{preview}»"))
+        elif not succeeded_any and last_error:
+            root.after(0, lambda: OneUIToast(root, f"Помилка Windows OCR: {last_error[:42]}", duration_ms=2600))
         else:
             root.after(0, lambda: OneUIToast(root, "Текст не розпізнано"))
 

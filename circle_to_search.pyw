@@ -1,68 +1,62 @@
-import os
 import sys
-import time
 import tkinter as tk
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
-
-from app.config import HOTKEY, load_last_mode, save_last_mode
-from app.win_api import setup_dpi_awareness, toggle_background_service
+from app.config import load_last_mode, save_last_mode
+from app.win_api import (
+    setup_dpi_awareness,
+    toggle_background_service,
+    start_global_hotkey_listener,
+)
 from app.actions import OneUIToast
 from app.overlay import OverlayUI
-import keyboard
 
 
 def main():
     setup_dpi_awareness()
-    status = toggle_background_service()
+    state = toggle_background_service()
 
     root = tk.Tk()
     root.withdraw()
 
-    # Якщо служба вже працювала — вона щойно вимкнулась, показуємо Toast і виходимо
-    if status == "stopped":
+    if state == "stopped":
         OneUIToast(root, "Circle to Search вимкнено", duration_ms=1300)
         root.after(1400, root.destroy)
         root.mainloop()
         sys.exit(0)
 
-    OneUIToast(root, "Circle to Search увімкнено • Alt + Q", duration_ms=1500)
+    OneUIToast(root, "Circle to Search увімкнено • Alt + Q", duration_ms=1700)
 
-    state = {
-        "overlay": None,
-        "last_toggle": 0.0,
-        "mode": load_last_mode(),
-    }
+    active_overlay = None
+    current_mode = load_last_mode()
+
+    def on_overlay_finish():
+        nonlocal active_overlay
+        active_overlay = None
 
     def on_mode_change(new_mode: str):
-        state["mode"] = new_mode
+        nonlocal current_mode
+        current_mode = new_mode
         save_last_mode(new_mode)
 
-    def toggle_overlay():
-        now = time.monotonic()
-        if now - state["last_toggle"] < 0.35:
-            return
-        state["last_toggle"] = now
+    def trigger_overlay():
+        nonlocal active_overlay
+        if active_overlay is not None and not active_overlay.closed:
+            try:
+                if active_overlay.win.winfo_exists():
+                    active_overlay.close()
+                    return
+            except Exception:
+                pass
+        active_overlay = None
 
-        current = state["overlay"]
-        if current is not None and not current.closed:
-            current.close()
-            state["overlay"] = None
-            return
-
-        def on_closed():
-            state["overlay"] = None
-
-        state["overlay"] = OverlayUI(
+        active_overlay = OverlayUI(
             root,
-            on_closed,
-            initial_mode=state["mode"],
+            on_finish=on_overlay_finish,
+            initial_mode=current_mode,
             on_mode_change=on_mode_change,
         )
 
-    keyboard.add_hotkey(HOTKEY, lambda: root.after(0, toggle_overlay))
+    start_global_hotkey_listener(lambda: root.after(0, trigger_overlay))
     root.mainloop()
 
 
